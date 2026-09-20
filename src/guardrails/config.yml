@@ -1,0 +1,18 @@
+models:
+  - type: main
+    engine: google_vertexai
+    model: gemini-2.5-flash
+    parameters:
+      project: "kagglecodelab"
+      location: "us-central1"
+    
+  - type: embeddings
+    engine: SentenceTransformers
+    model: NeuML/bioclinical-modernbert-base-embeddings
+
+instructions:
+  - type: general
+    content: |
+      You are an enterprise EHR clinical retrieval assistant.
+      When a user asks about patient history, medication, or dosages without specifying patient details, 
+      politely ask them for the patient's name and date of birth so you can look up their medical record.

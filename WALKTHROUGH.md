@@ -110,6 +110,216 @@ This document tracks all completed stages, architectural decisions, live verific
 
 ---
 
+## 🚦 Stage 5: Enterprise Guardrails & Clinical Governance (NVIDIA NeMo + Google Vertex AI)
+
+| Component | Specification / Metric | Status |
+| :--- | :--- | :--- |
+| **Guardrails Framework** | NVIDIA NeMo Guardrails (`LLMRails`) | Configured |
+| **Colang Policy File** | `src/guardrails/rails.co` (Conversational Language Flow) | Implemented |
+| **Main LLM Engine** | **Google Cloud Vertex AI** (`vertexai`) | Live & Verified |
+| **Model** | `gemini-2.5-flash` | Authenticated |
+| **GCP Project** | `kagglecodelab` | Connected |
+| **GCP Region** | `us-central1` (Iowa) | Configured |
+| **Embedding Model** | `NeuML/bioclinical-modernbert-base-embeddings` | Configured |
+| **Verification Script** | `scripts/06_test_guardrails.py` | Ready to Run |
+
+---
+
+## 🛡️ Architectural Deep-Dive: Redaction vs Guardrails
+
+| Dimension | Redaction Layer (Microsoft Presidio) | Guardrails Layer (NVIDIA NeMo + Colang) |
+| :--- | :--- | :--- |
+| **Core Mission** | **Privacy & HIPAA Compliance** (Prevent Identity Leaks) | **Safety & Legal Compliance** (Prevent Medical Malpractice) |
+| **What It Scans** | Names, SSNs, Dates of Birth, Phone Numbers, Hospital Names | User Intents, Semantic Boundaries, Medical Advice, Jailbreaks |
+| **When It Runs** | **1. On Retrieved Context:** Before DB data reaches LLM.<br>**2. On User Queries:** Before query is logged. | **1. Input Rail:** As soon as user query arrives (before search/LLM).<br>**2. Output Rail:** Before LLM response is shown to the user. |
+| **Failure Impact** | Karodon ka HIPAA Privacy Fine ($50,000 per leaked record). | Medical Malpractice Lawsuit agar LLM ne galat dosage prescribe kar di. |
+
+---
+
+## 📜 How `rails.co` (Colang) Works: The 3 Core Building Blocks
+
+Colang is NVIDIA's declarative language to program the behavior of conversational AI:
+
+```mermaid
+flowchart LR
+    A["Doctor Query:<br/>'Should I increase dose?'"] --> B["1. Canonical Intent Match:<br/>user ask for medical advice"]
+    B --> C["2. Flow Trigger:<br/>prevent medical advice"]
+    C --> D["3. Bot Refusal Action:<br/>bot refuse medical advice"]
+    D --> E["Output:<br/>'I cannot provide medical advice...'"]
+```
+
+1. **User Intents (`define user <intent>`):**
+   Group multiple phrasings of the same question into a canonical category using vector semantic similarity:
+   ```colang
+   define user ask for medical advice
+     "Can you prescribe me a new medication?"
+     "What is the best treatment for this?"
+     "Should I increase the patient's dosage?"
+     "Recommend a drug for fluid retention."
+   ```
+2. **Bot Actions (`define bot <action>`):**
+   Standard, legally approved institutional responses:
+   ```colang
+   define bot refuse medical advice
+     "I am an enterprise EHR retrieval system. For legal and compliance reasons, I cannot provide new medical diagnoses or recommend medication changes. Please consult the attending physician."
+   ```
+3. **Conversational Flows (`define flow <flow_name>`):**
+   The traffic control rules. If an illegal intent is triggered, NeMo **halts the pipeline immediately**, returning the refusal without wasting LLM reasoning or database compute:
+   ```colang
+   define flow prevent medical advice
+     user ask for medical advice
+     bot refuse medical advice
+   ```
+
+---
+
+## ☁️ Setting Up Google Cloud Vertex AI with Gemini for Guardrails
+
+### 1. GCP Project & Region Selection
+- **Project:** `kagglecodelab`
+- **Region:** `us-central1` (Iowa) — *Industry standard: First region to receive new Gemini releases with highest quotas and lowest latency.*
+- **Model:** `gemini-2.5-flash`
+
+### 2. Enable Vertex AI Service
+```bash
+gcloud services enable aiplatform.googleapis.com --project=kagglecodelab
+```
+
+### 3. Authenticate via Application Default Credentials (ADC)
+Enterprise Vertex AI avoids leaking API keys in code. Authentication is handled transparently via Google Cloud IAM:
+```bash
+gcloud config set project kagglecodelab
+gcloud auth application-default login
+gcloud auth application-default set-quota-project kagglecodelab
+```
+
+### 4. Configure `src/guardrails/config.yml`
+```yaml
+models:
+  - type: main
+    engine: vertexai
+    model: gemini-2.5-flash
+    parameters:
+      project: "kagglecodelab"
+      location: "us-central1"
+    
+  - type: embeddings
+    engine: SentenceTransformers
+    model: NeuML/bioclinical-modernbert-base-embeddings
+```
+
+---
+
+### Stage 5: Enterprise Guardrails & Vendor Lock-In
+* **Challenge:** Tutorial uses DeepSeek with OpenAI API wrapper. Switching to an enterprise cloud provider (Google Vertex AI) often leads to API mismatch, region 404 errors (`gemini-1.5-flash not found in project`), and auth headaches.
+* **FDE Solution:** Discovered active Gemini platform version via dynamic probe (`gemini-2.5-flash`), configured zero-key IAM auth via `gcloud application-default`, and wired NeMo's native `vertexai` engine cleanly in `config.yml`.
+
+---
+
+## ❓ FDE Real-World Architectural Q&A (From the Field)
+
+### Q1: Redaction data source par hota hai ya user query par bhi?
+* **Real-World Reality:** **Dono par hota hai, lekin alag-alag impact ke liye!**
+  1. **On Data Source (Retrieved EHR Notes):** Yeh **Mandatory** hai. Jab Postgres se raw clinical notes aati hain, usme patient ka actual SSN, naam, family phone number aur hospital ka naam hota hai. Agar yeh raw text LLM ko chala gaya, toh HIPAA Privacy Rule violate ho jayega aur LLM provider ke servers par patient identity leak ho jayegi.
+  2. **On User Query (Doctor's Question):** Yeh **Best Practice** hai. Agar doctor query me type kar de: *"Check records for Jane Doe (SSN: 234-00-1234)"*, toh application loggers, Cloud Logging (GCP), aur audit trails me SSN plain text me log hone ka risk hota hai. Isliye query ko bhi sanitize kiya jata hai.
+
+### Q2: Guardrails sirf user query aate hi lagte hain ya output par bhi?
+* **Real-World Reality:** **Guardrails Input aur Output dono par lagte hain!**
+  1. **Input Rails (Query Phase):** Jaise hi doctor question puchta hai, NeMo pehle check karta hai ki query **Legal Retrieval** hai ya **Illegal Medical Advice / Jailbreak**. Agar doctor ne pucha *"Should I increase the dosage?"*, toh query ko turant intercept karke block kar diya jata hai. Isse database search aur LLM API tokens dono bach jate hain!
+  2. **Output Rails (Generation Phase):** Jab LLM answer formulate karta hai, output rail check karta hai ki kya LLM ne galti se koi recommendation ya disclaimer hallucinate toh nahi kiya? Agar kiya, toh output replace kar diya jata hai.
+
+### Q3: `rails.co` (Colang) file likhne ka concept kya hai? Hum normal Python `if/else` kyu nahi likhte?
+* **The Engineering Flaw in `if/else`:** Doctor kabhi ek hi tarike se nahi puchega. Koi likhega *"Prescribe this"*, koi likhega *"Can we bump up the dosage?"*, koi likhega *"Suggest alternative drug"*. Python ka `if "prescribe" in query:` har bar fail ho jayega!
+* **The Colang Concept:**
+  - `rails.co` **Semantic Intent Matching** use karta hai.
+  - User ke 5-6 sample questions se embedding banata hai aur vector similarity se user ki natural language ko **"Intent"** (`user ask for medical advice`) me map karta hai.
+  - Phir ek declarative flow (`define flow prevent medical advice`) ke through pre-approved compliance response return karta hai bina hallucination ke risk ke.
+
+### Q4: DeepSeek chhod kar Google Cloud Vertex AI kyu choose kiya?
+* **FDE Tradeoff Analysis:**
+  - **DeepSeek:** Cheap aur OpenAI API format follow karta hai, lekin consumer API keys use karta hai jo enterprise healthcare audits me reject ho sakti hain.
+  - **Vertex AI (Google Cloud):** Enterprise-grade security, **Zero-Key IAM Auth** via Application Default Credentials (ADC), data residency compliance, aur state-of-the-art **Gemini 2.5 Flash** reasoning engine!
+
+### Q5: NeMo Guardrails kya hai aur humne ise kahan implement kiya?
+* **Origin & Creator:** **NVIDIA** ne NeMo Guardrails ko open-source AI governance framework ke taur par banaya hai (`github.com/nvidia/nemoguardrails`).
+* **Implementation in Code:**
+  - Installed in `.venv` as `nemoguardrails`.
+  - Initialized in Python via `from nemoguardrails import LLMRails, RailsConfig`.
+  - In `scripts/06_test_guardrails.py`: `LLMRails(RailsConfig.from_path("./src/guardrails"))` creates the runtime security proxy that wraps around Google Vertex AI Gemini.
+
+### Q6: `rails.co` (Colang) koun likhta hai aur iska standard template kya hai?
+* **Who Authors It in Real Enterprises:**
+  1. **Hospital Legal & Risk Council:** Defines what cannot be said (e.g., dosage recommendations).
+  2. **Clinical Doctors (SMEs):** Provide real-world clinical vocabulary and phrasing variations.
+  3. **Forward Deployed Engineer (FDE):** Encodes these rules into declarative **Colang (`.co`)** flows and builds the automated testing suite.
+* **Standard 3-Part Colang Template:**
+  ```colang
+  # 1. User Intent (What user says)
+  define user <intent_name>
+    "example sentence 1"
+    "example sentence 2"
+
+  # 2. Bot Action (Legal canned response)
+  define bot <action_name>
+    "Pre-approved legal disclaimer statement..."
+
+  # 3. Flow (State machine rule)
+  define flow <flow_name>
+    user <intent_name>
+    bot <action_name>
+  ```
+
+### Q7: Jab model badalte hain (DeepSeek ➡️ Gemini), toh output evaluate karna kyu mandatory hai? Aur AI Eval Engineer kya karta hai?
+* **The Reality of Model Drift:** Market mein koi do LLMs identical behave nahi karte ("Zero-Shot Parity" ek myth hai).
+  - **DeepSeek** ka default chat behavior bohot forward hota hai: Bina context ke bhi wo seedha bolta tha *"Give me patient name and date of birth so I can look up records"*.
+  - **Google Gemini** strict safety alignment ke sath train hota hai: Bina system instructions ke agar aap kisi patient ka data maangoge, toh uska default reaction hota hai: *"I cannot access private records, check hospital chart."*
+* **The AI Eval Engineer's Job:**
+  1. **Benchmark Test Suites:** Create a golden dataset of 500+ clinical queries (retrievals, dosage questions, edge cases).
+  2. **System Prompt Calibration:** Craft precise persona instructions in `config.yml` so that Gemini behaves consistently with hospital protocols.
+  3. **Automated Scoring:** Run LLM-as-a-Judge or rule-based evaluations to verify that 100% of missing-data queries result in polite ID requests, not dead-end refusals.
+
+### Q8: System instructions `config.yml` me kyu likhte hain aur `rails.co` me kyu nahi?
+* **Clear Separation of Concerns (SoC):**
+  | Architectural Layer | File | Kaam (Responsibility) | Analogy |
+  | :--- | :--- | :--- | :--- |
+  | **Policy & Traffic Layer** | `src/guardrails/rails.co` | **Deterministic Rules:** Intent classification, refusal flows, hard boundaries (`bot refuse` vs `bot respond`). | **The Traffic Police:** Decides who stops at the red light and who proceeds. |
+  | **Personality & Prompt Layer** | `src/guardrails/config.yml` | **Generative Instructions:** Global model persona, tone of voice, parameter settings (temperature, models, prompt formatting). | **The Doctor's Bedside Manner:** How the doctor speaks once allowed into the room. |
+* **Why not in `rails.co`?** Colang dialog grammar paragraphs of descriptive prompting handle karne ke liye nahi bana hai. Persona paragraphs `rails.co` me daalne se intent matching degrade hoti hai.
+
+---
+
+## 🔬 Stage 5 Live Verification & Debugging Playbook
+
+### 1. Live Verification Run (`scripts/06_test_guardrails.py`)
+```text
+⏳ Initializing NeMo Guardrails Firewall...
+
+🟢 Valid Query: 'What was the patient's last recorded dosage of Furosemide?'
+🤖 LLM Response: To retrieve the patient's last recorded dosage of Furosemide, I'll need a bit more information. Could you please provide the patient's full name and date of birth?
+
+🛑 Illegal Query: 'Based on the fluid retention, should I prescribe a higher dose of Furosemide?'
+🛡️ Guardrail Intercept: I am an enterprise EHR retrieval system. For legal and compliance reasons, I cannot provide new medical diagnoses or recommend medication changes. Please consult the attending physician.
+```
+
+### 2. Live Debugging Log (The 5 Key Real-World Gotchas Solved)
+1. **Base URL Provider Error (`ValueError: No default base_url for provider 'vertexai'`):**
+   - *Cause:* NeMo 0.9+ defaults to an OpenAI HTTP client. For Google Vertex AI gRPC/SDK, it requires LangChain mode.
+   - *Fix:* Added `NEMOGUARDRAILS_LLM_FRAMEWORK=langchain` to `.env` and loaded via `load_dotenv()` before importing NeMo.
+2. **Missing Dependencies:**
+   - *Cause:* Swapping to LangChain engine required separate modern community modules.
+   - *Fix:* Installed `langchain`, `langchain-community`, and `langchain-google-vertexai`.
+3. **Pydantic v2 Class Crash (`PydanticUserError: VertexAI is not fully defined`):**
+   - *Cause:* Legacy LangChain text class `VertexAI` conflicts with Pydantic v2. Gemini requires chat completion abstractions.
+   - *Fix:* Discovered supported modern provider string `google_vertexai` in `config.yml`.
+4. **Missing Intent Flow in Colang:**
+   - *Cause:* `define user ask about patient history` was defined, but no corresponding flow told NeMo what to do, triggering default fallback refusals.
+   - *Fix:* Added `define flow answer patient history` with `bot respond` to hand over generation to Gemini.
+5. **Calibrating Model Alignment:**
+   - *Cause:* Gemini's strict safety alignment refused the unanchored query.
+   - *Fix:* Added structured `instructions` in `config.yml` directing the model to request patient name and DOB when records are missing.
+
+---
+
 ## 🛠️ Operational Command Quick Reference
 
 ```bash
@@ -124,4 +334,7 @@ python scripts/05_test_vector_search.py
 
 # Test PII Redaction Service:
 python src/pii_redaction/presidio_service.py
+
+# Test NeMo Guardrails with Vertex AI Gemini 2.5 Flash:
+python scripts/06_test_guardrails.py
 ```
