@@ -18,9 +18,9 @@ def generate_and_store_embeddings():
         raise ValueError("CRITICAL DIMENSION MISMATCH: Model output does not match database vector(768).")
 
     # Increase batch size for network efficiency
-    batch_size = 2
+    batch_size = 128
     # For a demo, 10,000 records is perfect to prove scale without waiting hours
-    demo_limit = 100
+    demo_limit = 11000
     
     with engine.begin() as conn:
         print(f"🚀 Generating batched embeddings for up to {demo_limit} patient records...")
