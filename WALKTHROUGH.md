@@ -1,6 +1,6 @@
-# 📖 Project Walkthrough & Verification Log
+# 📖 Project Walkthrough, Learnings & FDE Engineering Log
 
-This document tracks all completed stages, architectural decisions, live verification results, and the **real-world debugging playbook** for the **Secure-EHR-Insight Clinical Validator** project.
+This document tracks all completed stages, architectural decisions, live verification results, and the **real-world Forward Deployed Engineer (FDE) playbook** for the **Secure-EHR-Insight Clinical Validator** project.
 
 ---
 
@@ -31,12 +31,6 @@ This document tracks all completed stages, architectural decisions, live verific
 | **Ingestion Pipeline** | `scripts/01_ingest_baseline_data.py` | Executed |
 | **Total Rows Ingested** | **232,158** records | **100% Verified** |
 
-### Live Database Verification Query
-```sql
-SELECT count(*) FROM patient_encounters;
--- Verified Count: 232,158 records
-```
-
 ---
 
 ## 🧬 Stage 2: pgvector AI Schema Upgrade (768 Dimensions)
@@ -49,11 +43,6 @@ SELECT count(*) FROM patient_encounters;
 | **Dimension Size** | `768` (Optimized for HuggingFace BioBERT / ClinicalBERT) | Verified |
 | **Migration Script** | `scripts/03_apply_vector_schema.py` | Executed Successfully |
 
-### Live Schema Confirmation:
-```text
-✅ Schema upgrade complete. Confirmed column: clinical_embedding (USER-DEFINED / vector)
-```
-
 ---
 
 ## 🤖 Stage 3: Clinical Embeddings Generation & Vectorization
@@ -65,96 +54,74 @@ SELECT count(*) FROM patient_encounters;
 | **Batch Size & Efficiency** | 128 rows/batch (~26 rows/sec on CPU) | Executed |
 | **Feature Engineering** | Super-string composite (Admission + Drug + Lab + Severity + Diagnosis + Notes) | Encoded |
 | **Total Rows Vectorized** | **11,008** records | **100% Verified** |
-| **Vector Verification Script** | `scripts/05_verify_embeddings.py` | Verified Live in AWS Postgres |
-
-### Live AWS PostgreSQL Embeddings Verification:
-```text
-Total Vectorized Rows in AWS PostgreSQL: 11,008 / 11,000
-Vector Dimension: 768 (Exactly 768 dimensions)
-
-Sample Record ID: 7
-Drug: Furosemide
-Diagnosis: OTHER DISORDERS OF THE LIVER
-Live Vector Array (preview): [0.84220153,-0.24981345,0.03998748,0.060800415,-0....
-
-All 11,000 embeddings verified successfully in AWS PostgreSQL.
-```
+| **Verification Script** | `scripts/05_verify_embeddings.py` | Verified Live in AWS Postgres |
 
 ---
 
-## 🧠 Debugging Playbook & Key Learnings (Bookmark for Future Projects!)
+## 🛡️ Stage 4: Zero-Trust PII / PHI Redaction (Microsoft Presidio)
 
-### 1. The "Ghost in the Shell" Alias Trap
-* **Symptom:** `ModuleNotFoundError: No module named 'sqlalchemy'` — even though packages were installed and `(.venv)` was visible in the prompt!
-* **Root Cause:** Mac's `~/.zshrc` had an alias: `alias python=python3.14`. In Unix shells, **aliases have higher priority than virtual environments**. Typing `python` bypassed `.venv` and executed the global Mac Python!
-* **How to Diagnose:**
-  ```bash
-  which python
-  # If output shows: "python: aliased to python3.14" -> That is the trap!
-  ```
-* **Permanent Fix:**
-  - Option A: Run `unalias python` in the terminal session.
-  - Option B: Run via `uv run python script.py` (bypasses aliases automatically).
-  - Option C: Explicitly call `.venv/bin/python script.py`.
+| Component | Specification / Metric | Status |
+| :--- | :--- | :--- |
+| **Security Framework** | HIPAA Safe Harbor Compliance (Zero-Trust Middleware) | Implemented |
+| **Analyzer Engine** | `AnalyzerEngine` with Spacy `en_core_web_lg` | Active |
+| **Anonymizer Engine** | `AnonymizerEngine` (Masks to `<PERSON>`, `<PHONE_NUMBER>`, etc.) | Active |
+| **Custom FDE Fix 1** | Catch-all SSN Pattern Recognizer (`\d{3}-\d{2}-\d{4}`) | Added |
+| **Custom FDE Fix 2** | Hospital Deny-List (`Massachusetts General Hospital`, etc.) | Added |
+| **Service Location** | `src/pii_redaction/presidio_service.py` | Implemented |
 
 ---
 
-### 2. PostgreSQL Driver Mismatch (`psycopg2` vs `psycopg 3`)
-* **Symptom:** `ModuleNotFoundError: No module named 'psycopg2'`.
-* **Root Cause:** SQLAlchemy URLs starting with `postgresql://` default to the older `psycopg2` driver. Modern environments that install `psycopg==3.x` don't have `psycopg2` unless explicitly installed.
-* **Fix Options:**
-  - Fast fix: `uv pip install psycopg2-binary` (0 code changes).
-  - Modern fix: Change URL prefix in code to `postgresql+psycopg://` to use Psycopg 3.
+## 🌟 What Makes an FDE (Forward Deployed Engineer) Different from a Conventional Software Engineer?
+
+| Dimension | Conventional Software Engineer (SWE) | AI Forward Deployed Engineer (AIFDE) |
+| :--- | :--- | :--- |
+| **Problem Ownership** | Waits for product managers to write clean Jira tickets. | Sits with the client, understands business/legal risks, and writes the specs. |
+| **Data Reality** | Expects clean, sanitized, well-structured CSV/JSON inputs. | Knows real-world enterprise data is messy, incomplete, and full of hidden edge cases. |
+| **Compliance & Privacy** | Treats security as a DevOps problem or after-thought. | Designs **Zero-Trust** from Day 1 (HIPAA, PII masking before LLM touches data). |
+| **Library Usage** | Blindly trusts libraries (`df.to_sql()`, default Presidio). | Understands mathematical & edge-case flaws in libraries and writes custom guardrails. |
+| **Value Delivered** | Writes code features. | Bridges client compliance, cloud infrastructure, AI models, and deployment into a working solution. |
 
 ---
 
-### 3. Mac Local Terminal vs Remote EC2 Server Confusion
-* **Symptom:** Running `cd terraform` inside the EC2 server gave: `-bash: cd: terraform: No such file or directory`.
-* **Learning:**
-  - **Mac Terminal (`%`)**: Holds Terraform code, `.env`, datasets, and Python app.
-  - **Remote Server (`ubuntu@ip:~$`)**: The virtual machine created in the cloud. It runs Postgres and does NOT have the terraform code.
-  - Always run `exit` to return to your Mac before executing Terraform commands!
+## 🧠 Real-World Challenges & Learnings by Stage
+
+### Stage 0: Cloud Infrastructure & Cost Control
+* **Challenge:** Leaving cloud instances running accumulates high monthly bills.
+* **FDE Solution:** Parameterized Terraform (`terraform.tfvars`) allows 1-command teardown (`terraform destroy` = $0) and 1-command startup (`terraform apply` = 60s).
+* **Security Insight:** Never open database port 5432 to `0.0.0.0/0`. Dynamic detection (`data "http" "my_ip"`) locks the firewall strictly to the developer's current IP.
+
+### Stage 1: Data Types in Healthcare (Float vs Integer)
+* **Challenge:** Using Pandas `df.to_sql()` auto-mode converts patient IDs with missing values into Floats (`10000032.0`). In hospital systems, float IDs break primary keys and patient record lookups!
+* **FDE Solution:** Pre-define strict database constraints in `schema.sql` (`subject_id BIGINT NOT NULL`). Pandas is only a transport pipe, not the architect.
+
+### Stage 2: Embedding Dimensions (Why 768 vs 1536?)
+* **Challenge:** OpenAI embeddings (1536 dim) cost money per API call and fail data residency compliance. General models (MiniLM) don't understand clinical drug names (`Furosemide`, `Vancomycin`).
+* **FDE Solution:** Open-source `BioClinical ModernBERT` (768 dim) runs locally for free, understands clinical vocabulary, and matches the PostgreSQL `vector(768)` column exactly.
+
+### Stage 3: Feature Engineering the "Super-String"
+* **Challenge:** Embedding only the doctor's comments misses the prescribed drug, admission type, and diagnosis.
+* **FDE Solution:** Concatenate 6 clinical dimensions into one composite string (`Admission | Prescribed | Lab Test | Severity | Diagnosis | Notes`). One vector captures the patient's entire encounter.
+
+### Stage 4: Zero-Trust PII Redaction & The SSN Checksum Gotcha
+* **Challenge 1 (Strict Checksum Bug):** Default Presidio checks if an SSN adheres to official US government issue rules. In synthetic or dummy healthcare test data (`SSN: 234-00-1234`), Presidio considered it an "invalid" SSN and **refused to redact it**, leaking sensitive data!
+* **FDE Solution:** Added a custom `PatternRecognizer` with regex `r"\d{3}-\d{2}-\d{4}"` (score 0.9) to redact ANY number matching the SSN pattern, regardless of government checksums.
+* **Challenge 2 (Missing Facility Names):** Default NLP models don't know specialized hospital names ("Massachusetts General Hospital").
+* **FDE Solution:** Discovered during Exploratory Data Analysis (EDA) and injected via a custom `deny_list` scored at 1.0.
 
 ---
 
-### 4. Ghostty Terminal Warning on Ubuntu
-* **Symptom:** `'xterm-ghostty': unknown terminal type` and `clear` command failure on remote server.
-* **Fix:**
-  ```bash
-  export TERM=xterm-256color
-  ```
-
----
-
-### 5. Why `schema.sql` vs Pandas Auto `df.to_sql()`
-* **The Danger of Pandas Auto Ingestion:**
-  1. A single empty/missing value in an integer column forces Pandas to convert patient IDs to **Float** (`10000032.0`). This causes search failures and floating-point comparison bugs in healthcare systems.
-  2. Pandas creates NO Primary Keys, Foreign Keys, or Unique constraints — leading to duplicate data on re-runs.
-  3. Pandas knows nothing about `pgvector` (`vector(384)`), treating AI embeddings as plain text strings.
-* **Rule:** Always enforce table structure via `schema.sql` first; use Pandas only as the transport mechanism!
-
----
-
-### 6. Security Group "My IP" Locking
-* **Best Practice:** Never open database ports (`5432`) or SSH (`22`) to `0.0.0.0/0`.
-* **Terraform Automation:** Use `data "http" "my_ip"` to dynamically fetch your public IP (`49.36.136.233/32`) and lock the firewall to only your laptop.
-
----
-
-## 🛠️ Operational Quick Reference
+## 🛠️ Operational Command Quick Reference
 
 ```bash
-# 1. SSH into the server:
-ssh -i ~/.ssh/test-FDE-Database.pem ubuntu@13.206.4.210
+# Verify Database Records:
+python scripts/02_verify_ingestion.py
 
-# 2. Check total database records:
-python -c "
-import os, sqlalchemy; from dotenv import load_dotenv; load_dotenv()
-engine = sqlalchemy.create_engine(f'postgresql://{os.getenv(\"DB_USER\")}:{os.getenv(\"DB_PASSWORD\")}@{os.getenv(\"DB_HOST\")}:{os.getenv(\"DB_PORT\")}/{os.getenv(\"DB_NAME\")}')
-with engine.connect() as conn:
-    print('Total Rows:', conn.execute(sqlalchemy.text('SELECT count(*) FROM patient_encounters')).scalar())
-"
+# Verify Vector Embeddings:
+python scripts/05_verify_embeddings.py
 
-# 3. Teardown when done ($0 AWS cost):
-cd terraform && terraform destroy -auto-approve
+# Run Vector Similarity Search:
+python scripts/05_test_vector_search.py
+
+# Test PII Redaction Service:
+python src/pii_redaction/presidio_service.py
 ```
