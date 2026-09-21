@@ -320,21 +320,78 @@ models:
 
 ---
 
+## 🚀 Stage 6: Enterprise Full-Stack Integration (FastAPI Backend + Streamlit Dashboard)
+
+| Component | Specification / Metric | Status |
+| :--- | :--- | :--- |
+| **Backend API Engine** | FastAPI (`src/api/main.py`) running on port `8000` | Verified & Live |
+| **Frontend Dashboard** | Streamlit (`src/ui/app.py`) running on port `8501` | Verified & Live |
+| **Architecture Pattern** | Decoupled Microservices (Independent UI and Core Backend) | Operational |
+| **Endpoint 1 (`/clinical-query`)** | Mock Health Check & Sanitized Pipeline Drill | Verified (HTTP 200) |
+| **Endpoint 2 (`/chat`)** | Production Vector Search (`pgvector`) + Redaction + Guardrails + Gemini 2.5 Flash | Verified (HTTP 200) |
+| **Endpoint 3 (`/patients`)** | Dynamic Patient Registry with Null-Embedding Exclusion Filter | Verified (HTTP 200) |
+| **Caching Layer** | Streamlit `@st.cache_data(ttl=300)` (5-minute TTL on patient IDs) | Verified |
+| **Security Layer** | True Zero-Trust (Both Database Context AND User Questions Redacted) | Implemented & Verified |
+
+---
+
+## ❓ FDE Real-World Architectural Q&A: Stage 6 Learnings
+
+### Q9: Humne yahan LangGraph ya ReAct Agent kyu use nahi kiya? (The No-Overkill Rule)
+* **What is a ReAct / LangGraph Agent?** ReAct agents reasoning karke autonomous decisions lete hain aur third-party external tools (web search, calculators, database mutating tools, python REPLs) ko loop mein call karte hain.
+* **Why it is an Anti-Pattern here:** Hamara task doctor ke sawal ka factual answer nikaal kar safe format mein dena hai. Yahan koi external tool-calling loop ya autonomous task execution nahi chahiye.
+* **The FDE Engineering Rule:** Simple deterministic pipeline par LangGraph lagana system ko slow, expensive (unnecessary LLM reasoning tokens), aur unpredictable banata hai. Clean state management (`st.session_state`) is the most robust, maintainable solution.
+
+### Q10: Streamlit ka Caching (`@st.cache_data(ttl=300)`) kaise kaam karta hai? Aur isme kya store hota hai?
+* **The Streamlit Trap:** Streamlit har user interaction (click, dropdown change, text entry) par **puri Python script ko line 1 se dubara run karta hai**. Bina caching ke har click par AWS EC2 database par heavy SQL query chali jayegi, jisse database crash ho sakta hai.
+* **What is Cached vs What is Live:**
+  - **Cached (5 Minutes / 300s):** Sirf **Patient IDs (Roll Numbers)** ki directory list (`["10000032", "10000826", ...]`). Isme zero sensitive health data hota hai.
+  - **Never Cached (Always Live):** Patient ka actual medical record (Dose, Lab tests, Diagnoses) kabhi cache nahi hota! Wo doctor ke sawal aane par live pgvector search se nikaala jata hai.
+* **5-Minute Auto-Refresh:** Agar hospital registration system mein naya patient admit hota hai, toh 5 minute baad cache expire hote hi wo naya patient dropdown mein automatically pop-up ho jata hai bina app restart kiye.
+
+### Q11: Kya User Query ko bhi Presidio se redact karna chahiye?
+* **The Security Flaw in Basic Tutorials:** Basic tutorials sirf database retrieval context ko redact karte hain, aur doctor ke typed question (`latest_question`) ko direct LLM ko bhej dete hain. Agar doctor ne query mein likh diya: *"Check dose for patient Amit Sharma (SSN: 234-00-1234)"*, toh PII leak ho jayega!
+* **True Zero-Trust Solution:**
+  ```python
+  # Redact Doctor Question as well!
+  safe_question = redactor.redact_clinical_context(raw_text=latest_question)
+  augmented_prompt = f"Clinical Context:\n{safe_context}\n\nUser Question: {safe_question}"
+  ```
+  Guardrail classifier ko patient ke actual name/SSN ki zaroorat nahi hoti — wo `<PERSON>` aur `<US_SSN>` par bhi same legal decision leta hai. Isse cross-cloud logs (AWS ➡️ GCP Vertex AI) 100% PII-clean rehte hain.
+
+### Q12: AWS Cloud Debugging — Dynamic ISP IP Drift Gotcha
+* **The Symptom:** Instance `running` state mein hai, par SSH aur Postgres dono `Connection refused` (ya timeout) bol rahe hain.
+* **The Root Cause:** Local internet service providers (Jio, Airtel, home Wi-Fi) dynamic IP addresses use karte hain. Router restart ya reconnect hone par caller ka public IP change ho jata hai (`49.36.136.233` ➡️ `49.36.144.144`). AWS Security Group strict firewall hone ke karan naye IP ko drop kar deta hai.
+* **The Diagnostic Command Checklist:**
+  ```bash
+  # 1. Check current IPv4 address:
+  curl -4 ifconfig.me
+
+  # 2. Find Security Group ID:
+  aws ec2 describe-security-groups --filters "Name=group-name,Values=ABCD" --region ap-south-1 --query "SecurityGroups[0].GroupId" --output text
+
+  # 3. Authorize new IP in AWS Security Group:
+  aws ec2 authorize-security-group-ingress --group-id <SG_ID> --protocol tcp --port 22 --cidr <NEW_IP>/32 --region ap-south-1
+  aws ec2 authorize-security-group-ingress --group-id <SG_ID> --protocol tcp --port 5432 --cidr <NEW_IP>/32 --region ap-south-1
+  ```
+
+---
+
 ## 🛠️ Operational Command Quick Reference
 
 ```bash
-# Verify Database Records:
-python scripts/02_verify_ingestion.py
+# 1. Start Cloud Database (AWS EC2):
+aws ec2 start-instances --instance-ids i-04721586ac2359b3d --region ap-south-1
 
-# Verify Vector Embeddings:
-python scripts/05_verify_embeddings.py
+# 2. Run Backend API Server (FastAPI):
+source .venv/bin/activate
+export NEMOGUARDRAILS_LLM_FRAMEWORK=langchain
+uvicorn src.api.main:app --reload --port 8000
 
-# Run Vector Similarity Search:
-python scripts/05_test_vector_search.py
+# 3. Run Frontend Dashboard (Streamlit):
+source .venv/bin/activate
+streamlit run src/ui/app.py
 
-# Test PII Redaction Service:
-python src/pii_redaction/presidio_service.py
-
-# Test NeMo Guardrails with Vertex AI Gemini 2.5 Flash:
-python scripts/06_test_guardrails.py
+# 4. Stop Cloud Database (Cost Control $0):
+aws ec2 stop-instances --instance-ids i-04721586ac2359b3d --region ap-south-1
 ```
