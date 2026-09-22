@@ -48,8 +48,10 @@ if prompt := st.chat_input(f"Ask about patient {patient_id}'s history..."):
             response.raise_for_status()
             bot_reply = response.json().get("llm_response")
             
-            # Enforce Output Disclaimer
-            bot_reply += "\n\n*⚠️ AI generated summary. Do not use for diagnostic purposes.*"
+            # Enforce Output Disclaimer (deduplicated)
+            disclaimer = "*⚠️ AI generated summary. Do not use for diagnostic purposes.*"
+            if "diagnostic purposes" not in bot_reply:
+                bot_reply += f"\n\n{disclaimer}"
             
         except requests.exceptions.RequestException as e:
             bot_reply = f"❌ API Error: {e}"

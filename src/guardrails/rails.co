@@ -10,7 +10,12 @@ define user ask about patient history
   "When was the patient admitted?"
   "Show me the historical lab results."
   "What medication is the patient currently taking?"
+  "What medications were prescribed upon discharge?"
+  "What medication were prescribed to him during discharge?"
   "What was the dosage of Furosemide?"
+  "Can you summarise the last few reports of this patient"
+  "Summarize the patient's clinical reports"
+  "What are the recent findings for this patient?"
 
 define bot refuse medical advice
   "I am an enterprise EHR retrieval system. For legal and compliance reasons, I cannot provide new medical diagnoses or recommend medication changes. Please consult the attending physician."

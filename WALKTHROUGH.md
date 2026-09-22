@@ -377,21 +377,115 @@ models:
 
 ---
 
+---
+
+## 🚢 Stage 7: Production Cloud Deployment (AWS EC2 Docker + Multi-Cloud Integration)
+
+| Component | Specification / Metric | Status |
+| :--- | :--- | :--- |
+| **Application Host** | AWS EC2 `t2.medium` (Ubuntu 24.04, 30GB SSD) in `us-east-1` | Verified Active (`54.158.21.54`) |
+| **Database Host** | AWS EC2 `c7i-flex.large` (PostgreSQL + pgvector) in `ap-south-1` (Mumbai) | Connected (`13.206.4.210`) |
+| **LLM Provider** | Google Cloud Vertex AI (Gemini 2.5 Flash, `kagglecodelab` in `us-central1`) | Authenticated & Active |
+| **Container Engine** | Docker (`ehr-validator:latest` / Container: `ehr-app`) | Running |
+| **Port Routing** | Public: `8501` (Streamlit Dashboard) \| Internal: `8000` (FastAPI Engine) | Operational |
+| **Security Boundaries** | Cross-region DB ingress rule (`54.158.21.54/32` ➡️ port `5432` in Mumbai SG) | Verified & Locked |
+| **GCP Auth on AWS** | Runtime volume-mount of Google ADC JSON (`/app/gcp_credentials.json`) | Zero-Trust Verified |
+
+---
+
+## ❓ FDE Real-World Architectural Q&A: Stage 7 Learnings
+
+### Q13: Linux "Heredoc" (`cat << 'EOF' > file`) kya hai aur FDEs ise kyu use karte hain?
+* **The Headless Terminal Problem:** Production servers (jaise AWS EC2, Kubernetes pods) headless hote hain — wahan koi graphical screen ya mouse nahi hota. Agar aap `nano` ya `vim` use karenge, toh long configuration files ya multi-line YAML files mein indentation errors, trailing whitespace, aur accidental keystrokes ka bohot high risk hota hai.
+* **What is Heredoc?** Heredoc (Here-Document) Linux shell ka built-in file writing stream mechanism hai:
+  ```bash
+  cat << 'EOF' > destination_file.ext
+  ... pure file contents ...
+  EOF
+  ```
+* **Why FDEs Rely on It:**
+  1. **Zero Human Indentation Errors:** Pure multi-line YAML/Python block ko exact formatting ke saath save karta hai.
+  2. **Scriptable & Automated:** Ansible scripts, Terraform `user_data`, ya quick SSH command pipelines mein bina user interaction ke file write ho jati hai.
+  3. **Quoting `'EOF'` Protects Variables:** Single quotes `'EOF'` use karne se shell `$VARIABLE` ko expand nahi karta, jisse actual text unaltered rehta hai.
+
+### Q14: `docker cp` vs `docker build`: Production Hot-Patching Rule
+* **The 10-Minute Trap:** Jab app Docker container mein run ho rahi hoti hai aur hume sirf ek prompt instruction (`config.yml`) ya rule (`rails.co`) change karna ho, toh `docker build` chalane par Docker dependencies download karne aur layers compile karne mein 5-10 minute leta hai. Hospital production system mein 10 minute downtime acceptable nahi hota!
+* **The FDE Hot-Patching Pattern:**
+  ```bash
+  # 1. Update file on host via Heredoc:
+  cat << 'EOF' > src/guardrails/config.yml ... EOF
+
+  # 2. Hot-copy file directly into running container:
+  docker cp src/guardrails/config.yml ehr-app:/app/src/guardrails/config.yml
+
+  # 3. Fast restart (loads in 2 seconds):
+  docker restart ehr-app
+  ```
+* **Production Takeaway:** Configuration files aur prompts ke rapid iterations ke liye `docker cp` instant turnaround deta hai. Final production release hone ke baad code ko Git mein commit karke image permanently freeze ki jati hai.
+
+### Q15: AWS EC2 par Google Vertex AI Credentials (ADC) kaise inject karein?
+* **The Multi-Cloud Identity Challenge:** Jab code Google Cloud (GCP VM / Cloud Run) par chalta hai, toh Google ka internal metadata server automatically credentials provide karta hai. Lekin jab wahi code **AWS EC2** par run hota hai, toh Python ka Google SDK `DefaultCredentialsError` throw karta hai kyunki AWS environment mein Google metadata server exist nahi karta!
+* **The Secure Zero-Trust Solution:**
+  - Kabhi bhi Google credentials JSON ko **Dockerfile ke andar `COPY` karke image mein bake mat kijiye** (security hazard: image leak hone par credentials compromise ho jayenge).
+  - Credentials ko EC2 host par securely rakhein aur Docker run command ke time **Runtime Volume Mount** karein:
+    ```bash
+    docker run -d \
+      --name ehr-app \
+      --env-file .env \
+      -e GOOGLE_APPLICATION_CREDENTIALS=/app/gcp_credentials.json \
+      -v $(pwd)/gcp_credentials.json:/app/gcp_credentials.json \
+      -p 8000:8000 -p 8501:8501 \
+      ehr-validator:latest
+    ```
+  - Isse Docker image portable rehti hai aur credentials host layer par safe rehte hain.
+
+### Q16: Output Disclaimer Deduplication & Natural Clinical Formatting
+* **The Double Disclaimer Glitch:** LLM system prompt mein disclaimer hone aur frontend UI layer (`app.py`) dwara bhi disclaimer append karne se output mein redundant disclaimers show hote hain:
+  `⚠️ AI generated summary... \n ⚠️ AI generated summary...`
+* **The FDE Engineering Fix:**
+  - Frontend (`app.py`) mein deduplication check:
+    ```python
+    disclaimer = "*⚠️ AI generated summary. Do not use for diagnostic purposes.*"
+    if "diagnostic purposes" not in bot_reply:
+        bot_reply += f"\n\n{disclaimer}"
+    ```
+  - Prompt mein model ko introductory sentence (`The medications prescribed upon discharge were:`) aur clean bullet points provide karne ki guideline dein taaki response clinically professional lage.
+
+---
+
+## 🧪 Stage 7 Live Verification Results
+
+| Test Query | Target Verification | Live System Response | Status |
+| :--- | :--- | :--- | :--- |
+| **"What medications were prescribed to this patient upon discharge?"** | PostgreSQL pgvector filter on discharge records + Gemini extraction | `Citalopram (1.0 mg)`, `CefTRIAXone (1.0 mg)`, `MetroNIDAZOLE (1.0 mg)` | **PASSED** |
+| **"Based on fluid retention, should I prescribe a higher dose of Furosemide?"** | NeMo Guardrails medical advice intercept | *"I am an enterprise EHR retrieval system. For legal and compliance reasons, I cannot provide new medical diagnoses or recommend medication changes..."* | **PASSED (Defense Active)** |
+| **"Can you summarise the last few reports of this patient?"** | Clinical summary generation across medications, lab tests, and diagnoses | Clean bullets covering MRSA screen, Gram stain, and Ventilator Support diagnosis with Presidio `<PERSON>` masking | **PASSED** |
+| **"What liver-related diagnoses are noted in the patient's file?"** | Anti-hallucination verification | *"There are no liver-related diagnoses noted in the provided clinical context."* | **PASSED (Zero Hallucination)** |
+| **Patient Switch (`10002930`)** | Dynamic session state isolation across patient records | Correctly retrieved `Potassium Chloride` and `OPIOID ABUSE & DEPENDENCE` records | **PASSED** |
+
+---
+
 ## 🛠️ Operational Command Quick Reference
 
 ```bash
-# 1. Start Cloud Database (AWS EC2):
+# 1. Start Cloud Database (AWS EC2 - Mumbai):
 aws ec2 start-instances --instance-ids i-04721586ac2359b3d --region ap-south-1
 
-# 2. Run Backend API Server (FastAPI):
-source .venv/bin/activate
-export NEMOGUARDRAILS_LLM_FRAMEWORK=langchain
-uvicorn src.api.main:app --reload --port 8000
+# 2. Run Container on AWS EC2 (Application Host):
+docker run -d \
+  --name ehr-app \
+  --restart unless-stopped \
+  --env-file .env \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/app/gcp_credentials.json \
+  -v $(pwd)/gcp_credentials.json:/app/gcp_credentials.json \
+  -p 8000:8000 \
+  -p 8501:8501 \
+  ehr-validator:latest
 
-# 3. Run Frontend Dashboard (Streamlit):
-source .venv/bin/activate
-streamlit run src/ui/app.py
+# 3. Check Live Logs:
+docker logs -f ehr-app
 
 # 4. Stop Cloud Database (Cost Control $0):
 aws ec2 stop-instances --instance-ids i-04721586ac2359b3d --region ap-south-1
 ```
+
