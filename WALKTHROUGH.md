@@ -423,7 +423,9 @@ models:
   ```
 * **Production Takeaway:** Configuration files aur prompts ke rapid iterations ke liye `docker cp` instant turnaround deta hai. Final production release hone ke baad code ko Git mein commit karke image permanently freeze ki jati hai.
 
-### Q15: AWS EC2 par Google Vertex AI Credentials (ADC) kaise inject karein?
+### Q15: AWS EC2 par Google Vertex AI Credentials (ADC) kaise inject karein? (The 500 API Error)
+* **The Symptom:** Streamlit UI shows: `❌ API Error: 500 Server Error: Internal Server Error for url: http://localhost:8000/api/v1/chat`. In `docker logs ehr-app`, the traceback reveals:
+  `google.auth.exceptions.DefaultCredentialsError: Your default credentials were not found.`
 * **The Multi-Cloud Identity Challenge:** Jab code Google Cloud (GCP VM / Cloud Run) par chalta hai, toh Google ka internal metadata server automatically credentials provide karta hai. Lekin jab wahi code **AWS EC2** par run hota hai, toh Python ka Google SDK `DefaultCredentialsError` throw karta hai kyunki AWS environment mein Google metadata server exist nahi karta!
 * **The Secure Zero-Trust Solution:**
   - Kabhi bhi Google credentials JSON ko **Dockerfile ke andar `COPY` karke image mein bake mat kijiye** (security hazard: image leak hone par credentials compromise ho jayenge).
@@ -439,7 +441,16 @@ models:
     ```
   - Isse Docker image portable rehti hai aur credentials host layer par safe rehte hain.
 
-### Q16: Output Disclaimer Deduplication & Natural Clinical Formatting
+### Q16: Multi-Cloud Cross-Region Ingress Freeze (US-East App ➡️ Mumbai Database)
+* **The Symptom:** Frontend initial patient list load karne par `Starting Streamlit...` par freeze ho gaya ya `GET /api/v1/patients` timeout de raha tha.
+* **The Root Cause:** Application EC2 instance US-East (`us-east-1` / `54.158.21.54`) mein tha, jabki PostgreSQL Database Mumbai (`ap-south-1` / `13.206.4.210`) mein tha. Mumbai Security Group mein port 5432 sirf developer ke local IP ke liye open tha, US-East server ke IP ke liye nahi.
+* **The FDE Fix:** Mumbai Security Group mein explicitly US-East App Host ka IP `/32` CIDR ke saath allow kiya:
+  ```bash
+  aws ec2 authorize-security-group-ingress --group-id <MUMBAI_SG_ID> --protocol tcp --port 5432 --cidr 54.158.21.54/32 --region ap-south-1
+  ```
+
+
+### Q17: Output Disclaimer Deduplication & Natural Clinical Formatting
 * **The Double Disclaimer Glitch:** LLM system prompt mein disclaimer hone aur frontend UI layer (`app.py`) dwara bhi disclaimer append karne se output mein redundant disclaimers show hote hain:
   `⚠️ AI generated summary... \n ⚠️ AI generated summary...`
 * **The FDE Engineering Fix:**
